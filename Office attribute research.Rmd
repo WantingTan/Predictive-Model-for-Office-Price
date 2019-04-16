@@ -1,0 +1,1102 @@
+---
+title: "Key Attributes to Price Office"
+output: html_document
+---
+
+# 1. Introduction
+
+Today, all WeWork offices are priced based on the size (USF), window, and whether it has an internal room inside. There are many other attributes of the office that are not taken into consideration - e.g. view quality, premium floor, distance to common areas - mainly because we don’t have accurate data. There is a big opportunity for Revenue Optimization to increase revenue by incorporating additional office characteristics into pricing. 
+
+The goal of the project is to build a business case for why we will need this data to be collected in the future (i.e. backfill by CM’s for existing buildings & include in the future building programming process). We want this data to live in the Galaxy database the Core Platform team (Mission 1) is building so that it can better enrich Revstar’s ability to price all our offices. 
+
+Therefore, in this project, I will do some analysis an build models to find out which attributes are important to net paid price.
+
+# 2. Preparation
+R packages need to use:
+```{r val=FALSE}
+library(dplyr)
+library(corrplot)
+library(RColorBrewer)
+library(glmnet)
+library(readr)
+library(psych)
+library(caret)
+library(stringr)
+library(plyr)
+library(gridExtra)
+library(car)
+library(GGally)
+library(purrr)
+```
+
+## 2.1 Read Data
+I have been visited 8 WeWork buildings--1959 offices in total. I stored data I collected from buildings in space.info, which can be downloaded from stargate. Another data scource I used is dw.mv_monthly_spaec_products. I extracted important attributes and office information I need from redshift and imported into Tableau to calculate occupation ratio, average discount and score. I have packed all the data I used in project folder.
+
+The number of offices in my model is 1921 because of data mismatch between the two data sources. There are mainly 3 types:
+- some office numbers in dw.mv_monthly_space_products do not exist in space.info 
+- some offices are being used as storage rooms at this moment but still show available to sell in system database
+- some offices are sold separately  eg. in space.info room number is 123; in space_products are 123A, 123B, 123C
+
+```{r echo=FALSE, message=FALSE, warning=FALSE,include=FALSE}
+E120_23rd_perf <- read_csv("data/E120_23rd_perf", col_types = cols(latestdate = col_skip(), location_name_1 = col_skip(), location_name_2 = col_skip(), reservable_name_1 = col_skip(), reservable_name_2 = col_skip()))
+
+E205_42nd_perf <- read_csv("data/E205_42nd_perf", col_types = cols(latestdate = col_skip(), location_name_1 = col_skip(), location_name_2 = col_skip(), reservable_name_1 = col_skip(), reservable_name_2 = col_skip()))
+
+Lexington450_perf <- read_csv("data/Lexington450_perf", col_types = cols(latestdate = col_skip(), location_name_1 = col_skip(), location_name_2 = col_skip(), reservable_name_1 = col_skip(), reservable_name_2 = col_skip()))
+
+Fifth404_perf <- read_csv("data/Fifth404_perf", col_types = cols(latestdate = col_skip(), location_name_1 = col_skip(), location_name_2 = col_skip(), reservable_name_1 = col_skip(), reservable_name_2 = col_skip()))
+
+Broadway25_perf <- read_csv("data/Broadway25_perf", col_types = cols(latestdate = col_skip(), location_name_1 = col_skip(), location_name_2 = col_skip(), reservable_name_1 = col_skip(), reservable_name_2 = col_skip()))
+
+Broad85_perf <- read_csv("data/Broad85_perf", col_types = cols(latestdate = col_skip(), location_name_1 = col_skip(), location_name_2 = col_skip(), reservable_name_1 = col_skip(), reservable_name_2 = col_skip()))
+
+Madison_perf <- read_csv("data/Madison_perf", col_types = cols(latestdate = col_skip(), location_name_1 = col_skip(), location_name_2 = col_skip(), reservable_name_1 = col_skip(), reservable_name_2 = col_skip()))
+
+E57thSt_perf <- read_csv("data/E57thSt_perf", col_types = cols(latestdate = col_skip(),  location_name_1 = col_skip(), location_name_2 = col_skip(), reservable_name_1 = col_skip(), reservable_name_2 = col_skip()))
+
+X120E23rd_data <- read_csv("data/120E23rd_data.csv")
+X205_E_42nd_data <- read_csv("data/205 E 42nd_data.csv")
+X450_Lexington_data <- read_csv("data/450 Lexington_data.csv")
+X404_5th_data <- read_csv("data/404 5th_data.csv")
+X25_Broadway_data <- read_csv("data/25 Broadway_data.csv")
+X25broadway_data<-X25_Broadway_data[-which(X25_Broadway_data$`Floor Name`=="10th Floor"),]
+X261_Madison_Ave_data <- read_csv("data/261 Madison Ave_data.csv")
+X135_E_57th_data <- read_csv("data/135 E 57th_data.csv")
+
+X85_Broad_data <- read_csv("data/85 Broad_data.csv")
+X85_Broad_data$`Room Number` <- str_replace_all(X85_Broad_data$`Room Number`, "[.]", "-") #**.**=>**-**
+X85_Broad_data$`Room Number`[which(str_detect(X85_Broad_data$`Room Number`,"-[1-9]{1}$"))]
+X85_Broad_data$`Room Number`[which(str_detect(X85_Broad_data$`Room Number`,"-[0-9]{2}$"))]
+for(i in 1:length(X85_Broad_data$`Room Number`))
+{
+  if(str_detect(X85_Broad_data$`Room Number`[i],"-[1-9]{1}$")) 
+    X85_Broad_data$`Room Number`[i]<-paste0(X85_Broad_data$`Room Number`[i],"00",sep="")
+  if(str_detect(X85_Broad_data$`Room Number`[i],"-[0-9]{2}$")) 
+    X85_Broad_data$`Room Number`[i]<-paste0(X85_Broad_data$`Room Number`[i],"0",sep="")
+  if(X85_Broad_data$`Room Number`[i]=="16-110A")
+    X85_Broad_data$`Room Number`[i]=="16-113"
+}
+
+
+data_120E<-merge(X120E23rd_data, E120_23rd_perf,by.x=c("Room Number"),by.y=c("reservable_name")) #157
+data_205E<-merge(X205_E_42nd_data, E205_42nd_perf,by.x=c("Room Number"),by.y=c("reservable_name")) #308
+data_lexington<-merge(X450_Lexington_data, Lexington450_perf,by.x=c("Room Number"),by.y=c("reservable_name")) #132
+data_4045th<-merge(X404_5th_data, Fifth404_perf,by.x=c("Room Number"),by.y=c("reservable_name")) #213
+data_25broad<-merge(X25broadway_data, Broadway25_perf,by.x=c("Room Number"),by.y=c("reservable_name")) #168
+data_85broad<-merge(X85_Broad_data, Broad85_perf,by.x=c("Room Number"),by.y=c("reservable_name")) #606
+data_madison<-merge(X261_Madison_Ave_data, Madison_perf,by.x=c("Room Number"),by.y=c("reservable_name")) #140
+data_135E<-merge(X135_E_57th_data, E57thSt_perf,by.x=c("Room Number"),by.y=c("reservable_name")) #197
+
+#tab1<-data.frame(id=X135_E_57th_data$`Room Number`)
+#tab2<-data.frame(id=E57thSt_perf$reservable_name)
+#anti_join(tab2,tab1)
+
+
+# total number offices
+nrow(E120_23rd_perf)+ nrow(E205_42nd_perf) +nrow(Lexington450_perf) +nrow(Fifth404_perf)+169+nrow(Broad85_perf)+nrow(Madison_perf)+202
+#1959
+
+# number of offices in the model
+nrow(data_120E)+nrow(data_205E)+nrow(data_lexington)+nrow(data_4045th)+nrow(data_25broad)+nrow(data_85broad)+nrow(data_madison)+nrow(data_135E)
+#1921
+
+#ratio 98%
+1921/1959
+```
+
+## 2.2 Data Cleaning
+First of all, I joined two data sources together (dw.mv_monthly_space_products & space.info) for each building. Then I examined dataset logic. For example: if the office does not have window, then it should not have premium window and premium corner.
+
+```{r include=FALSE}
+glimpse(data_120E)
+data_120E$InternalRoomCount[-which(data_120E$InternalRoomCount==1)]<-0 #numeric internalroom
+data_120E$InternalRoomCount
+data_205E$InternalRoomCount[-which(data_205E$InternalRoomCount==1)]<-0 #numeric internalroom
+data_205E$InternalRoomCount
+data_lexington$InternalRoomCount[-which(data_lexington$InternalRoomCount==1)]<-0 #numeric internalroom
+data_lexington$InternalRoomCount
+data_4045th$InternalRoomCount[-which(data_4045th$InternalRoomCount==1)]<-0 #numeric internalroom
+data_4045th$InternalRoomCount
+data_25broad$InternalRoomCount[-which(data_25broad$InternalRoomCount==1)]<-0 #numeric internalroom
+data_25broad$InternalRoomCount
+data_85broad$InternalRoomCount[-which(data_85broad$InternalRoomCount==1)]<-0 #numeric internalroom
+data_85broad$InternalRoomCount
+data_madison$InternalRoomCount[-which(data_madison$InternalRoomCount==1)]<-0 #numeric internalroom
+data_madison$InternalRoomCount
+data_135E$InternalRoomCount[-which(data_135E$InternalRoomCount==1)]<-0 #numeric internalroom
+data_135E$InternalRoomCount
+
+#examine no window offices
+##HasWindow & View Quality
+table1<-data.frame(id=which(data_120E$HasWindow=='No'))
+table2<-data.frame(id=which(data_120E$`View Quality`=='no window'))
+anti_join(table2,table1) #4031 5031 wrong data in the system
+data_120E$HasWindow[c(28,108)]<-'No'
+table1<-data.frame(id=which(data_120E$HasWindow=='No'))
+##View Quality & Premium Window
+table3<-data.frame(id=which(data_120E$`Premium Windows`=='no window'))
+anti_join(table2,table3)
+##HasWindow & Premium Window
+anti_join(table3,table1)
+
+##HasWindow & View Quality
+table1<-data.frame(id=which(data_205E$HasWindow=='No'))
+table2<-data.frame(id=which(data_205E$`View Quality`=='no window'))
+anti_join(table1,table2)
+anti_join(table2,table1)#clear
+##View Quality & Premium Window
+table3<-data.frame(id=which(data_205E$`Premium Windows`=='no window'))
+anti_join(table3,table2)
+anti_join(table2,table3)
+##HasWindow & Premium Window
+anti_join(table1,table3) #76
+anti_join(table3,table1)
+data_205E$`Premium Windows`[76]<-'yes'
+
+##HasWindow & View Quality
+table1<-data.frame(id=which(data_lexington$HasWindow=='No'))
+table2<-data.frame(id=which(data_lexington$`View Quality`=='no window'))
+anti_join(table2,table1)
+anti_join(table1,table2)#clear
+##View Quality & Premium Window
+table3<-data.frame(id=which(data_lexington$`Premium Windows`=='no window'))
+anti_join(table2,table3)
+anti_join(table3,table2)
+##HasWindow & Premium Window
+anti_join(table3,table1)
+anti_join(table1,table3)
+
+##HasWindow & View Quality
+table1<-data.frame(id=which(data_4045th$HasWindow=='No'))
+table2<-data.frame(id=which(data_4045th$`View Quality`=='no window'))
+anti_join(table2,table1)
+anti_join(table1,table2)#clear
+##View Quality & Premium Window
+table3<-data.frame(id=which(data_4045th$`Premium Windows`=='no window'))
+anti_join(table2,table3)
+anti_join(table3,table2) #92
+data_4045th$`Premium Windows`[92]<-'no'
+##HasWindow & Premium Window
+anti_join(table3,table1)
+anti_join(table1,table3)
+
+##HasWindow & View Quality
+table1<-data.frame(id=which(data_25broad$HasWindow=='No'))
+table2<-data.frame(id=which(data_25broad$`View Quality`=='no window'))
+anti_join(table2,table1)
+anti_join(table1,table2)#clear
+data_25broad$`View Quality`[c(48,49,50,51,90)]<-"medium"
+data_25broad$`View Quality`[129]<-"low"
+data_25broad$`Light Quality`[78]<-"medium"
+data_25broad$`View Quality`[78]<-"no window"
+##View Quality & Premium Window
+table3<-data.frame(id=which(data_25broad$`#Premium Windows`+ data_25broad$`#regular window`==0))
+anti_join(table2,table3)
+anti_join(table3,table2)
+data_25broad$`View Quality`[90]<-"no window"
+data_25broad$HasWindow[90]<-"No"
+data_25broad$`#regular window`[129]<-2
+##HasWindow & Premium Window
+anti_join(table3,table1)
+anti_join(table1,table3)
+
+##HasWindow & View Quality
+table1<-data.frame(id=which(data_85broad$HasWindow=='No'))
+table2<-data.frame(id=which(data_85broad$`View Quality`=='no window'))
+anti_join(table2,table1)
+anti_join(table1,table2)#clear
+data_85broad$`View Quality`[c(228,577,580,583,589,591,592,593)]<-"medium"
+data_85broad$`Light Quality`[c(228,577,580,583,589,591,592,593)]<-"high"
+data_85broad<-data_85broad[-507,]
+##View Quality & Premium Window
+table3<-data.frame(id=which(data_85broad$`#Premium Windows`+ data_85broad$`#regular window`==0))
+anti_join(table2,table3)
+anti_join(table3,table2)
+data_85broad$`#regular window`[603]<-0
+data_85broad$`#regular window`[504]<-2
+data_85broad$`#regular window`[530]<-1
+data_85broad$`#regular window`[593]<-4
+##HasWindow & Premium Window
+anti_join(table3,table1)
+anti_join(table1,table3)
+data_85broad$`Dry Wall Ratio`[which(data_85broad$`Dry Wall Ratio`=="1:3")]<-"1/3"
+data_85broad$`Dry Wall Ratio`[which(data_85broad$`Dry Wall Ratio`=="2:2")]<-"2/2"
+data_85broad$`Dry Wall Ratio`[which(data_85broad$`Dry Wall Ratio`=="3:1")]<-"3/1"
+
+##HasWindow & View Quality
+table1<-data.frame(id=which(data_madison$HasWindow=='No'))
+table2<-data.frame(id=which(data_madison$`View Quality`=='no window'))
+anti_join(table2,table1)
+anti_join(table1,table2)
+data_madison$HasWindow[c(98,101)]<-"No"
+##View Quality & Premium Window
+table3<-data.frame(id=which(data_madison$`#Premium Windows`+ data_madison$`#regular window`==0))
+anti_join(table2,table3)
+anti_join(table3,table2) 
+data_madison$HasWindow[53]<-"No"
+data_madison$`View Quality`[53]<-"no window"
+data_madison<-data_madison[-50,]
+##HasWindow & Premium Window
+anti_join(table3,table1)
+anti_join(table1,table3)
+
+##HasWindow & View Quality
+table1<-data.frame(id=which(data_135E$HasWindow=='No'))
+table2<-data.frame(id=which(data_135E$`View Quality`=='no window'))
+anti_join(table2,table1)
+anti_join(table1,table2)
+##View Quality & Premium Window
+table3<-data.frame(id=which(data_135E$`#Premium Windows`+ data_135E$`#regular window`==0))
+anti_join(table2,table3)
+anti_join(table3,table2) 
+##HasWindow & Premium Window
+anti_join(table3,table1)
+anti_join(table1,table3)
+```
+
+### 2.2.1 Clustering for Premium Window and Internal Obstruction
+An important part of data cleaning is clustering for premium window and internal obstruction. For the first 4 buildings, the measurements for internal obstruction are no obstruction, less-severe, severe and the measurements for premium window are no window, yes(it's premium), no(it's not premium). However, after discussion in my first presentation, we devided to use a more objective way to collect data for these two attributes. For internal obstruction of remaining 4 buildings, I collected the number of obstruction at the corner, the number of obstruction against the wall and the number of obstruction in the middle. For premium window of remaining 4 buildings, I collected the number of regular window and the number of premium window.
+```{r include=FALSE}
+cluster_85Broad<-data_85broad[c("Room Number","Property Name","DeskCount_Room","#Premium Windows","#regular window","#corner_obstruction","#wall_obstruct","#middle_obstruct")]
+cluster_25broad<-data_25broad[c("Room Number","Property Name","DeskCount_Room","#Premium Windows","#regular window","#corner_obstruction","#wall_obstruct","#middle_obstruct")]
+cluster_135E<-data_135E[c("Room Number","Property Name","DeskCount_Room","#Premium Windows","#regular window","#corner_obstruction","#wall_obstruct","#middle_obstruct")]
+cluster_madison<-data_madison[c("Room Number","Property Name","DeskCount_Room","#Premium Windows","#regular window","#corner_obstruction","#wall_obstruct","#middle_obstruct")]
+
+clu_matrix<-rbind(cluster_85Broad,cluster_25broad,cluster_135E,cluster_madison)
+dim(clu_matrix) #1109 8
+```
+
+Next step, I tried to use Kmeans to classified data of obstruction and premium window into three types. So, I count a obstruction score and premium window score. I have showed the specific format in slides. The following plot shows the measurement distribution of internal obstruction and premium windows classified by Kmeans. For internal obstruction classification plot, we can see most offices have no obstruction and the classification boundary is clear. However, for premium windows classification. "no window" part and "not premium winodw" part have overlaped a lot. This is because I made a little change before Kmeans. Kmeans would classify some office that have a small window into "no window" part. That's contradict the fact. Therefore, I manualy classified offices without windows into "no window" part and then classified remaining offices into two types ("it's premium","not premium") by Kmeans.
+```{r message=FALSE, echo=FALSE}
+#internal obstruction
+clu_matrix$obstru_score<-(clu_matrix$`#corner_obstruction`+1.2* clu_matrix$`#wall_obstruct` + 1.4*clu_matrix$`#middle_obstruct`)/clu_matrix$DeskCount_Room
+set.seed(123)
+obs_k3<-kmeans(clu_matrix$obstru_score,centers=3,nstart=25)
+clu_matrix$InternalObstruction<-obs_k3$cluster
+
+Obstruction<-as.factor(clu_matrix$InternalObstruction)
+Obstruction<-revalue(Obstruction,c("1"="no obstruction", "2"="less severe","3"="severe"))
+
+obs_plot<-clu_matrix %>% 
+  ggplot(aes(obstru_score)) + 
+  geom_density(aes(group=Obstruction,colour=Obstruction,fill=Obstruction), alpha=0.3)+
+  ggtitle("Internal Obstruction Classification") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+#premium window
+clu_matrix$window_score<-(clu_matrix$`#regular window`+ 1.2*clu_matrix$`#Premium Windows`)/clu_matrix$DeskCount_Room
+set.seed(123)
+a<-clu_matrix %>% filter(window_score>0)
+wind_k3<-kmeans(a$window_score,centers=2,nstart=25)
+a$`Premium Windows`<-wind_k3$cluster
+clu_matrix<-join(clu_matrix,a,by=c("Room Number","Property Name"))
+clu_matrix$`Premium Windows`[which(clu_matrix$window_score==0)]<-0
+clu_matrix<-clu_matrix[,-(12:20)]
+
+Window<-as.factor(clu_matrix$`Premium Windows`)
+Window<-revalue(Window,c("0"="no window", "1"="not premium window","2"="is premium window"))
+win_plot<-clu_matrix %>% 
+  ggplot(aes(window_score)) + 
+  geom_density(aes(group=Window,colour=Window,fill=Window), alpha=0.3)+
+  ggtitle("Premium Windows Classification") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+grid.arrange(obs_plot,win_plot,ncol=1)
+```
+
+Red ones are first 4 buildings' data classified by me and blue ones are remaining 4 buildings' data classified by Kmeans. I put them together so that I can compare whether the propotion is similar. After that, I put the classification result by Kmeans back to original data.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+##corr_data_ear
+corr_120E<-data_120E[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+corr_lenxington<-data_lexington[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+corr_4045th<-data_4045th[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+corr_205E<-data_205E[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+corr_data_ear<-rbind(corr_120E,corr_lenxington,corr_4045th,corr_205E)
+
+### compare first 4 and last 4
+obs_table<-data.frame(table(clu_matrix$InternalObstruction)[c(2,1,3)])
+obs_ear<-data.frame(table(corr_data_ear$`Internal Obstruction`)[c(2,1,3)])
+obs_com<-cbind(obs_ear,obs_table$Freq)
+colnames(obs_com)<-c("Internal Obstruction","Classified Manually","Classified by Kmean")
+obs_com<-stack(obs_com)
+obs_com$category<-c("no obstruction","less severe","severe","no obstruction","less severe","severe")
+obs_com_plot<-ggplot(obs_com, aes(category, values,fill=ind))+
+  geom_bar(stat="identity",position="dodge")+
+  ggtitle("Obstruction Classification Comparison") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylab("frequency")
+
+
+win_table<-data.frame(table(clu_matrix$`Premium Windows`))
+win_ear<-data.frame(table(corr_data_ear$`Premium Windows`))
+win_com<-cbind(win_ear,win_table$Freq)
+colnames(win_com)<-c("Premium Window","Classified Manually","Classified by Kmean")
+win_com<-stack(win_com)
+win_com$category<-c("not premium","no window","premium","no window","not premium","premium")
+win_com_plot<-ggplot(win_com, aes(category, values,fill=ind))+
+  geom_bar(stat="identity",position="dodge")+
+  ggtitle("Premium Window Comparison") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylab("frequency")
+
+grid.arrange(obs_com_plot,win_com_plot,ncol=1)
+
+
+#put dadta back to original dataset
+clu_matrix$InternalObstruction[which(clu_matrix$InternalObstruction==1)]<-"no obstruction"
+clu_matrix$InternalObstruction[which(clu_matrix$InternalObstruction==2)]<-"less-severe" 
+clu_matrix$InternalObstruction[which(clu_matrix$InternalObstruction==3)]<-"severe" 
+clu_matrix$`Premium Windows`[which(clu_matrix$`Premium Windows`==0)]<-"no window"
+clu_matrix$`Premium Windows`[which(clu_matrix$`Premium Windows`==1)]<-"no"
+clu_matrix$`Premium Windows`[which(clu_matrix$`Premium Windows`==2)]<-"yes"
+
+extra_85broad<-clu_matrix %>% filter(`Property Name`=="85 Broad") %>% 
+  select(`Room Number`, `Property Name`,InternalObstruction,`Premium Windows`)
+extra_25broad<-clu_matrix %>% filter(`Property Name`=="25 Broadway") %>% 
+  select(`Room Number`, `Property Name`,InternalObstruction,`Premium Windows`)
+extra_135E<-clu_matrix %>% filter(`Property Name`=="135 E 57th") %>% 
+  select(`Room Number`, `Property Name`,InternalObstruction,`Premium Windows`)
+extra_madison<-clu_matrix %>% filter(`Property Name`=="261 Madison Ave") %>% 
+  select(`Room Number`, `Property Name`,InternalObstruction,`Premium Windows`)
+
+data_85broad<-merge(data_85broad,extra_85broad)
+data_25broad<-merge(data_25broad,extra_25broad)
+data_135E<-merge(data_135E,extra_135E)
+data_madison<-merge(data_madison,extra_madison)
+```
+
+# 3. Statistics Modeling
+## 3.1 Data Exploration for Net Paid Price
+```{r message=FALSE, include=FALSE}
+dens_120E<-data_120E[c("Room Number","Property Name","Floor Name","DeskCount_Room","HasWindow","Square Feet","occupancy","ave_discount","accup_ratio","score","sku","ave_net_paid_price")]
+dens_205E<-data_205E[c("Room Number","Property Name","Floor Name","DeskCount_Room","HasWindow","Square Feet","occupancy","ave_discount","accup_ratio","score","sku","ave_net_paid_price")]
+dens_lenxington<-data_lexington[c("Room Number","Property Name","Floor Name","DeskCount_Room","HasWindow","Square Feet","occupancy","ave_discount","accup_ratio","score","sku","ave_net_paid_price")]
+dens_4045th<-data_4045th[c("Room Number","Property Name","Floor Name","DeskCount_Room","HasWindow","Square Feet","occupancy","ave_discount","accup_ratio","score","sku","ave_net_paid_price")]
+dens_25broad<-data_25broad[c("Room Number","Property Name","Floor Name","DeskCount_Room","HasWindow","Square Feet","occupancy","ave_discount","accup_ratio","score","sku","ave_net_paid_price")]
+dens_85broad<-data_85broad[c("Room Number","Property Name","Floor Name","DeskCount_Room","HasWindow","Square Feet","occupancy","ave_discount","accup_ratio","score","sku","ave_net_paid_price")]
+dens_madision<-data_madison[c("Room Number","Property Name","Floor Name","DeskCount_Room","HasWindow","Square Feet","occupancy","ave_discount","accup_ratio","score","sku","ave_net_paid_price")]
+dens_135E<-data_135E[c("Room Number","Property Name","Floor Name","DeskCount_Room","HasWindow","Square Feet","occupancy","ave_discount","accup_ratio","score","sku","ave_net_paid_price")]
+
+dens_data<-rbind(dens_120E,dens_205E,dens_lenxington,dens_4045th,dens_25broad,dens_85broad,dens_madision,dens_135E)
+# add net paid price per desk and square feet per desk
+dens_data$net_paid_price_per_desk<-dens_data$ave_net_paid_price/dens_data$DeskCount_Room
+dens_data$square_feet_per_desk<-dens_data$`Square Feet`/dens_data$DeskCount_Room
+dim(dens_data) #1919 14
+```
+
+The 1st one is density plot of net paid price per office and 2nd is density for net paid price per desk. Average net paid price per desk is 694.42 USD.
+```{r warning=FALSE, echo=FALSE}
+#density of net paid price
+plott<-dens_data %>% ggplot(aes(x=ave_net_paid_price)) + 
+              geom_density(fill="#4271AE", colour="#1F3552",alpha=0.6) +
+              ggtitle("Density Plot of Net Paid Price") +
+              xlim(0,20000) +
+              theme(plot.title = element_text(hjust = 0.5)) +
+              geom_vline(aes(xintercept=mean(ave_net_paid_price)),color="blue", linetype="dashed", size=0.8)
+
+#density of net paid price Per Desk
+plot1<-dens_data %>% ggplot(aes(x=net_paid_price_per_desk)) + 
+              geom_density(fill="#4271AE", colour="#1F3552",alpha=0.6) +
+              xlim(0,1600) + 
+              ggtitle("Density Plot of Net Paid Price Per Desk") +
+              theme(plot.title = element_text(hjust = 0.5)) +
+              geom_vline(aes(xintercept=mean(net_paid_price_per_desk)),color="blue", linetype="dashed", size=0.8)
+grid.arrange(plott,plot1,ncol=1)
+
+```
+
+These three plots are also related to net paid price. The first one is net paid price per desk plot in different buildings. 25 Broadway has smallest net paid price per desk which is 604.4 USD while 450 Lexington has the largest net paid price per desk 794.3 USD. We can see a big difference between buildings. The building location may influence the net paid price. The second one is the density of net paid price per desk classified by window. It looks like the price is almost the same no matter the office has window or not. However, offices with windows are usually large office. The unit price of the large office is actually lower than small office. Therefore, the window premium may be offset by the large space discount. When we consider net paid price per office, we can see the price differnce between office with windows and office without windows.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# does location have effect in net paid price per desk?
+dens_loc<-dens_data[,c("net_paid_price_per_desk","Property Name")]
+dens_loc$`Property Name`<-factor(dens_loc$`Property Name`)
+dens_loc<-as.data.frame(dens_loc)
+mu<-ddply(dens_loc,.(`Property Name`),summarise,grp.mean=mean(net_paid_price_per_desk))
+
+#max(mu$grp.mean)-min(mu$grp.mean) #189.87 
+
+plot2<-dens_loc %>% ggplot(aes(x=net_paid_price_per_desk)) +
+              geom_density(aes(group=`Property Name`,colour=`Property Name`,fill=`Property Name`), alpha=0.2) +
+              xlim(0,1600) + 
+              ggtitle("Density Plot of Net Paid Price Per Desk") +
+              theme(plot.title = element_text(hjust = 0.5)) +
+              geom_vline(data=mu, aes(xintercept=min(grp.mean), color=`Property Name`[which(grp.mean==min(grp.mean))]),
+              linetype="dashed",size=1)+
+              geom_vline(data=mu, aes(xintercept=max(grp.mean), color=`Property Name`[which(grp.mean==max(grp.mean))]),
+             linetype="dashed",size=1)
+
+#density of net paid price per desk classifies by HasWindow
+dens_fac<-dens_data[,c("net_paid_price_per_desk","HasWindow")]
+dens_fac$HasWindow<-factor(dens_fac$HasWindow,labels=c("No","Yes"))
+df<-as.data.frame(dens_fac)
+mu1<-ddply(df,"HasWindow",summarise,grp.mean=mean(net_paid_price_per_desk))
+
+
+plot3<-df %>% ggplot(aes(x=net_paid_price_per_desk)) +
+              geom_density(aes(group=HasWindow,colour=HasWindow,fill=HasWindow), alpha=0.3) +
+              xlim(0,1600) + 
+              ggtitle("Density Plot of Net Paid Price Per Desk") +
+              theme(plot.title = element_text(hjust = 0.5)) +
+              geom_vline(data=mu1, aes(xintercept=grp.mean, color=HasWindow),
+             linetype="dashed")
+
+#density of net paid price classified by HasWindow
+dens_fac1<-dens_data[,c("ave_net_paid_price","HasWindow")]
+dens_fac1$HasWindow<-factor(dens_fac1$HasWindow,labels=c("No","Yes"))
+df1<-as.data.frame(dens_fac1)
+mu11<-ddply(df1,"HasWindow",summarise,grp.mean=mean(ave_net_paid_price))
+
+plo<-df1 %>% ggplot(aes(x=ave_net_paid_price)) +
+              geom_density(aes(group=HasWindow,colour=HasWindow,fill=HasWindow), alpha=0.3) +
+              xlim(0,20000) + 
+              ggtitle("Density Plot of Net Paid Price") +
+              theme(plot.title = element_text(hjust = 0.5)) +
+              geom_vline(data=mu11, aes(xintercept=grp.mean, color=HasWindow),
+             linetype="dashed")
+
+
+grid.arrange(plot2,plot3,plo,ncol=1)
+```
+
+## 3.2 Correlation Between Net Paid Price and All attributes
+This is a correlation plot between net paid price and multiple attributes. The darker the color, the higher they are correlated. Blue means positive correlation while red stands for negative correlation. We can see clearly ave_net_paid_price (net paid price for each office) is not only influenced by Square Feet, Internal Room Count, Has Window (which we already have in out price system) but also affected by View Quality, Premium Windows, Premium Corner and Light Quality. 
+
+However, Light Quality, Premium Windows, Has Window and View Quality are highly correlated, which means this could be the reason why they are all highly correlated with net paid price. Meanwhile, it may cause collinearity problem in modeling process. For these selected buildings, Internal Obstruction, Dry Wall Ratio, Premium Floor do not have much correlation with price.
+
+```{r}
+### correlation data
+## get data
+corr_120E<-data_120E[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+corr_lenxington<-data_lexington[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+corr_4045th<-data_4045th[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+corr_205E<-data_205E[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+corr_25broad<-data_25broad[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","InternalObstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+colnames(corr_25broad)<-c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")
+corr_85broad<-data_85broad[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","InternalObstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+colnames(corr_85broad)<-c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")
+corr_madison<-data_madison[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","InternalObstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+colnames(corr_madison)<-c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")
+corr_135E<-data_135E[c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","InternalObstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")]
+colnames(corr_135E)<-c("Room Number","Property Name","InternalRoomCount","Square Feet","HasWindow","View Quality","Light Quality","Internal Obstruction","Dry Wall Ratio","Premium Windows","Premium Floor","Premium Corner","score","ave_net_paid_price","DeskCount_Room","sku")
+
+corr_data<-rbind(corr_120E,corr_lenxington,corr_4045th,corr_205E,corr_25broad,corr_85broad,corr_madison,corr_135E)
+```
+
+
+```{r}
+#correlation plot of net paid price and score with all attributes
+corr_matrix <- corr_data[,c(-1,-2,-15,-16,-17,-18,-19)]
+
+corr_matrix$HasWindow<-ifelse(corr_matrix$HasWindow=='Yes',1,0)
+corr_matrix$`View Quality`<-ifelse(corr_matrix$`View Quality`=='no window',1,
+                                   ifelse(corr_matrix$`View Quality`=='low',2,
+                                          ifelse(corr_matrix$`View Quality`=='medium',3,
+                                                 ifelse(corr_matrix$`View Quality`=='high',4,NA))))
+corr_matrix$`Light Quality`<-ifelse(corr_matrix$`Light Quality`=='low',1,
+                                          ifelse(corr_matrix$`Light Quality`=='medium',2,
+                                                 ifelse(corr_matrix$`Light Quality`=='high',3,NA)))
+corr_matrix$`Internal Obstruction`<-ifelse(corr_matrix$`Internal Obstruction`=='no obstruction',1,
+                                    ifelse(corr_matrix$`Internal Obstruction`=='less-severe',2,
+                                           ifelse(corr_matrix$`Internal Obstruction`=='severe',3,NA)))
+corr_matrix$`Dry Wall Ratio`<- ifelse(corr_matrix$`Dry Wall Ratio`=='0',0,
+                                      ifelse(corr_matrix$`Dry Wall Ratio`=='1/3',1/3,
+                                             ifelse(corr_matrix$`Dry Wall Ratio`=='2/2',2/2,
+                                                    ifelse(corr_matrix$`Dry Wall Ratio`=='3/1',3/1,NA))))
+corr_matrix$`Premium Windows`<-ifelse(corr_matrix$`Premium Windows`=='no window',1,
+                                           ifelse(corr_matrix$`Premium Windows`=='no',2,
+                                                  ifelse(corr_matrix$`Premium Windows`=='yes',3,NA)))
+corr_matrix$`Premium Floor`<-ifelse(corr_matrix$`Premium Floor`=='yes',1,0)
+corr_matrix$`Premium Corner`<-ifelse(corr_matrix$`Premium Corner`=='yes',1,0)
+
+corr<-cor(corr_matrix)
+corrplot(corr, method="color",order="hclust",tl.col="black",tl.srt=45)
+```
+
+## correlation plot after data transformation
+```{r}
+#correlation plot of net paid price and score with all attributes
+# delete haswindow; combine no window with no in premium window; log(ave_net_paid_price)
+corr_matrix <- corr_data[,c(-1,-2,-5,-15,-16,-17,-18,-19)]
+
+corr_matrix$ave_net_paid_price<-log(corr_matrix$ave_net_paid_price)
+corr_matrix$`Premium Windows`[which(corr_matrix$`Premium Windows`=="no window")]<-"no"
+#corr_matrix$HasWindow<-ifelse(corr_matrix$HasWindow=='Yes',1,0)
+corr_matrix$`View Quality`<-ifelse(corr_matrix$`View Quality`=='no window',1,
+                                   ifelse(corr_matrix$`View Quality`=='low',2,
+                                          ifelse(corr_matrix$`View Quality`=='medium',3,
+                                                 ifelse(corr_matrix$`View Quality`=='high',4,NA))))
+corr_matrix$`Light Quality`<-ifelse(corr_matrix$`Light Quality`=='low',1,
+                                          ifelse(corr_matrix$`Light Quality`=='medium',2,
+                                                 ifelse(corr_matrix$`Light Quality`=='high',3,NA)))
+corr_matrix$`Internal Obstruction`<-ifelse(corr_matrix$`Internal Obstruction`=='no obstruction',1,
+                                    ifelse(corr_matrix$`Internal Obstruction`=='less-severe',2,
+                                           ifelse(corr_matrix$`Internal Obstruction`=='severe',3,NA)))
+corr_matrix$`Dry Wall Ratio`<- ifelse(corr_matrix$`Dry Wall Ratio`=='0',0,
+                                      ifelse(corr_matrix$`Dry Wall Ratio`=='1/3',1/3,
+                                             ifelse(corr_matrix$`Dry Wall Ratio`=='2/2',2/2,
+                                                    ifelse(corr_matrix$`Dry Wall Ratio`=='3/1',3/1,NA))))
+corr_matrix$`Premium Windows`<-ifelse(corr_matrix$`Premium Windows`=='no',1,
+                                                  ifelse(corr_matrix$`Premium Windows`=='yes',2,NA))
+corr_matrix$`Premium Floor`<-ifelse(corr_matrix$`Premium Floor`=='yes',1,0)
+corr_matrix$`Premium Corner`<-ifelse(corr_matrix$`Premium Corner`=='yes',1,0)
+
+corr<-cor(corr_matrix)
+round(corr,2)
+corrplot(corr, method="color",order="hclust",tl.col="black",tl.srt=45)
+
+
+```
+```{r}
+#correlation plot of net paid price per desk and score with all attributes
+corr_matrix1 <- corr_data[,c(-1,-2,-4,-5,-13,-14,-15,-16)]
+dim(corr_matrix1)
+
+corr_matrix1$net_paid_price_per_desk<-log(corr_matrix1$net_paid_price_per_desk)
+corr_matrix1$`Premium Windows`[which(corr_matrix1$`Premium Windows`=="no window")]<-"no"
+corr_matrix1$`View Quality`<-ifelse(corr_matrix1$`View Quality`=='no window',1,
+                                   ifelse(corr_matrix1$`View Quality`=='low',2,
+                                          ifelse(corr_matrix1$`View Quality`=='medium',3,
+                                                 ifelse(corr_matrix1$`View Quality`=='high',4,NA))))
+corr_matrix1$`Light Quality`<-ifelse(corr_matrix1$`Light Quality`=='low',1,
+                                          ifelse(corr_matrix1$`Light Quality`=='medium',2,
+                                                 ifelse(corr_matrix1$`Light Quality`=='high',3,NA)))
+corr_matrix1$`Internal Obstruction`<-ifelse(corr_matrix1$`Internal Obstruction`=='no obstruction',1,
+                                    ifelse(corr_matrix1$`Internal Obstruction`=='less-severe',2,
+                                           ifelse(corr_matrix1$`Internal Obstruction`=='severe',3,NA)))
+corr_matrix1$`Dry Wall Ratio`<- ifelse(corr_matrix1$`Dry Wall Ratio`=='0',0,
+                                      ifelse(corr_matrix1$`Dry Wall Ratio`=='1/3',1/3,
+                                             ifelse(corr_matrix1$`Dry Wall Ratio`=='2/2',2/2,
+                                                    ifelse(corr_matrix1$`Dry Wall Ratio`=='3/1',3/1,NA))))
+corr_matrix1$`Premium Windows`<-ifelse(corr_matrix1$`Premium Windows`=='no',1,
+                                                  ifelse(corr_matrix1$`Premium Windows`=='yes',2,NA))
+corr_matrix1$`Premium Floor`<-ifelse(corr_matrix1$`Premium Floor`=='yes',1,0)
+corr_matrix1$`Premium Corner`<-ifelse(corr_matrix1$`Premium Corner`=='yes',1,0)
+
+corr1<-cor(corr_matrix1)
+corrplot(corr1, method="color",order="hclust",tl.col="black",tl.srt=45)
+
+```
+
+
+## Model 1: Multivariate linear regression
+Assumptions for multivariate linear regression:
+1. the relationship between the independent and dependent variables to be linear
+2. (residual) the errors between observed and predicted values should be normally distributed
+3. there's no multicollinearity in the data. Multicollinearity occurs when the independent variables are too highly correlated with each other.
+
+This model is aimed to find what kind of attributes can directly influence office's net paid price. The result can be a reference for the second model to help us find out important attributes for different office sku type.
+Build a multivariate linear regression, Ridge, Lasso, Elastic net regression between net paid price and all attributes
+
+## Model 1: Lm Ridge and Lasso (using net paid price per desk: no log, have HasWindow)
+```{r}
+library(moments)
+library(caret)
+
+mod_matrix1<-corr_data[,c(-1,-5,-4,-13,-14,-15,-16)]
+## hot noe encoding for categorical features
+feature_classes <- sapply(names(mod_matrix1),function(x){class(mod_matrix1[[x]])})
+numeric_feats <-names(feature_classes[feature_classes != "character"])
+categorical_feats <- names(feature_classes[feature_classes == "character"])
+dummies <- dummyVars(~.,mod_matrix1[categorical_feats])
+categorical_1_hot <- predict(dummies,mod_matrix1[categorical_feats])
+categorical_1_hot[is.na(categorical_1_hot)] #check
+all_data<-cbind(mod_matrix1[numeric_feats],categorical_1_hot)
+
+# split data to train data and test data
+n=1919
+train_rows <- sample(1:n, .75*n)
+x<-all_data[,-3]
+y<-all_data[,3]
+
+x.train <- x[train_rows, ]
+x.test <- x[-train_rows, ]
+
+y.train <- y[train_rows]
+y.test <- y[-train_rows]
+
+train<-cbind(y.train,x.train)
+test<-cbind(y.test, x.test)
+
+custom <- trainControl(method="repeatedcv", number=10, repeats=5, verboseIter=T)
+
+#lm
+set.seed(1234)
+lm<-train(y.train~., train, method='lm', trControl=custom)
+lm$results
+summary(lm)
+plot(lm$finalModel)
+
+#ridge
+lambdas <- seq(1,0,-0.001)
+set.seed(123)
+ridge <- train(y.train~., train, method='glmnet', 
+               tuneGrid=expand.grid(alpha=0,lambda=lambdas),
+               trControl=custom)
+plot(ridge) #best lambda=0.026
+ridge
+plot(ridge$finalModel, xvar="lambda", label=T)
+plot(ridge$finalModel, xvar="dev", label=T)
+plot(varImp(ridge,scale=F))
+
+cv.ridge<-cv.glmnet(x,y,alpha=0,nlambda=100,lambda.min.ratio=0.0001)
+plot(cv.ridge)
+best.lambda<-cv.ridge$lambda.min
+predict(cv.ridge, s=best.lambda, type="coefficients")
+
+
+#Lasso
+lambdas <- seq(1,0,-0.01)
+set.seed(123)
+lasso<-train(y.train~., train, method='glmnet', 
+               tuneGrid=expand.grid(alpha=1,lambda=lambdas),
+               trControl=custom)
+lasso
+plot(lasso)
+plot(lasso$finalModel,xvar='lambda',label=T)
+plot(lasso$finalModel,xvar='dev',label=T)
+plot(varImp(lasso, scale=T))
+lasso$bestTune # best lambda=0.004
+best<-lasso$finalModel
+coef(best, s=lasso$bestTune$lambda)
+
+## LASSO
+cv.lasso<-cv.glmnet(x,y,alpha=1)
+plot(cv.lasso)
+best.lambda<-cv.lasso$lambda.min
+predict(cv.lasso, s=best.lambda, type="coefficients")
+
+#Elastic net regression
+set.seed(123)
+en<-train(y.train~., train, method='glmnet', 
+               tuneGrid=expand.grid(alpha=seq(0,1,length=10),lambda=lambdas),
+               trControl=custom)
+plot(en)
+plot(en$finalModel, xvar='lambda',label=T)
+plot(en$finalModel,xvar='dev',label=T)
+plot(varImp(en,scale=T))
+
+#Compare Models
+model_list<-list( LinearModel=lm, Ridge=ridge, Lasso=lasso, ElasticNet=en)
+res<-resamples(model_list)
+summary(res)
+bwplot(res)
+xyplot(res, metric='RMSE')
+
+#Best Model
+en$bestTune
+best<-en$finalModel
+coef(best, s=en$bestTune$lambda)
+
+#Prediction
+p1<-predict(lm,train)
+sqrt(mean((train$y.train-p1)^2)) #train error
+
+p2<-predict(lm, test)
+sqrt(mean((test$y.test-p2)^2)) #test error
+
+```
+
+#model 2: data transformation(price_per_desk), no HasWindow)
+```{R}
+mod_matrix1<-corr_data[,c(-1,-5,-4,-13,-14,-15,-16)]
+mod_matrix1$InternalRoomCount<-scale(mod_matrix1$InternalRoomCount)
+mod_matrix1$square_feet_per_desk<-scale(mod_matrix1$square_feet_per_desk)
+mod_matrix1$net_paid_price_per_desk<-scale(mod_matrix1$net_paid_price_per_desk)
+mod_matrix1$`Premium Windows`[which(mod_matrix1$`Premium Windows`=="no window")]<-"no"
+all_data<-mod_matrix1
+
+# split data to train data and test data
+n=nrow(all_data)
+train_rows <- sample(1:n, .75*n)
+x<-all_data[,-11]
+y<-all_data[,11]
+
+x.train <- x[train_rows, ]
+x.test <- x[-train_rows, ]
+
+y.train <- y[train_rows]
+y.test <- y[-train_rows]
+
+train<-cbind(y.train,x.train)
+test<-cbind(y.test, x.test)
+
+custom <- trainControl(method="repeatedcv", number=10, repeats=5, verboseIter=T)
+
+#do not split
+
+x<-all_data[,-11]
+y<-all_data[,11]
+x.train <- x
+y.train <- y
+train<-cbind(y.train,x.train)
+
+#lm
+set.seed(1234)
+lm1<-train(y.train~., train, method='lm', trControl=custom)
+lm1$results
+summary(lm1)
+plot(lm1$finalModel)
+
+#ridge
+lambdas <- seq(1,0,-0.001)
+set.seed(123)
+ridge1 <- train(y.train~., train, method='glmnet', 
+               tuneGrid=expand.grid(alpha=0,lambda=lambdas),
+               trControl=custom)
+plot(ridge1) #best lambda=0.026
+ridge1
+plot(ridge1$finalModel, xvar="lambda", label=T)
+plot(ridge1$finalModel, xvar="dev", label=T)
+plot(varImp(ridge1,scale=F))
+
+
+#Lasso
+lambdas <- seq(1,0,-0.001)
+set.seed(123)
+lasso1<-train(y.train~., train, method='glmnet', 
+               tuneGrid=expand.grid(alpha=1,lambda=lambdas),
+               trControl=custom)
+lasso1
+plot(lasso1)
+plot(lasso1$finalModel,xvar='lambda',label=T)
+plot(lasso1$finalModel,xvar='dev',label=T)
+plot(varImp(lasso1, scale=T))
+lasso1$bestTune # best lambda=0.004
+best<-lasso1$finalModel
+coef(best, s=lasso1$bestTune$lambda)
+
+#Compare Models
+model_list<-list( LinearModel=lm1, Ridge=ridge1, Lasso=lasso1)
+res<-resamples(model_list)
+summary(res)
+bwplot(res)
+xyplot(res, metric='RMSE')
+
+#Best Model
+lasso1$bestTune
+best<-lasso1$finalModel
+coef(best, s=lasso1$bestTune$lambda)
+
+#Prediction
+p1<-predict(lm,train)
+sqrt(mean((train$y.train-p1)^2)) #train error
+
+p2<-predict(lm, test)
+sqrt(mean((test$y.test-p2)^2)) #test error
+```
+
+## Model 3:Lm Ridge and Lasso (using net paid price; log(price), no HasWindow)
+```{r}
+
+mod_matrix<-corr_data[,c(-1,-5,-13,-15,-16,-17,-18)]
+mod_matrix$ave_net_paid_price<-log(mod_matrix$ave_net_paid_price)
+mod_matrix$InternalRoomCount<-scale(mod_matrix$InternalRoomCount)
+mod_matrix$`Square Feet`<-scale(mod_matrix$`Square Feet`)
+mod_matrix$ave_net_paid_price<-scale(mod_matrix$ave_net_paid_price)
+mod_matrix$`Premium Windows`[which(mod_matrix$`Premium Windows`=="no window")]<-"no"
+all_data<-mod_matrix
+
+# split data to train data and test data
+n=1918
+train_rows <- sample(1:n, .75*n)
+x<-all_data[,-11]
+y<-all_data[,11]
+
+x.train <- x[train_rows, ]
+x.test <- x[-train_rows, ]
+
+y.train <- y[train_rows]
+y.test <- y[-train_rows]
+
+train<-cbind(y.train,x.train)
+test<-cbind(y.test, x.test)
+
+#do not split
+
+x<-all_data[,-11]
+y<-all_data[,11]
+x.train <- x
+y.train <- y
+train<-cbind(y.train,x.train)
+
+custom <- trainControl(method="repeatedcv", number=10, repeats=5, verboseIter=T)
+
+#lm
+set.seed(1234)
+lm<-train(y.train~., train, method='lm', trControl=custom)
+lm$results
+summary(lm)
+plot(lm$finalModel)
+
+
+#ridge
+lambdas <- seq(1,0,-0.001)
+set.seed(123)
+ridge <- train(y.train~., train, method='glmnet', 
+               tuneGrid=expand.grid(alpha=0,lambda=lambdas),
+               trControl=custom)
+plot(ridge) #best lambda=0.074
+ridge
+plot(ridge$finalModel, xvar="lambda", label=T)
+plot(ridge$finalModel, xvar="dev", label=T)
+plot(varImp(ridge,scale=F))
+
+
+#Lasso
+lambdas <- seq(1,0,-0.001)
+set.seed(123)
+lasso<-train(y.train~., train, method='glmnet', 
+               tuneGrid=expand.grid(alpha=1,lambda=lambdas),
+               trControl=custom)
+lasso
+plot(lasso)
+plot(lasso$finalModel,xvar='lambda',label=T)
+plot(lasso$finalModel,xvar='dev',label=T)
+plot(varImp(lasso, scale=T))
+lasso$bestTune # best lambda=0.004
+best<-lasso$finalModel
+coef(best, s=lasso$bestTune$lambda)
+
+
+#Elastic net regression
+set.seed(123)
+en<-train(y.train~., train, method='glmnet', 
+               tuneGrid=expand.grid(alpha=seq(0,1,length=10),lambda=lambdas),
+               trControl=custom)
+plot(en)
+plot(en$finalModel, xvar='lambda',label=T)
+plot(en$finalModel,xvar='dev',label=T)
+plot(varImp(en,scale=T))
+
+#Compare Models
+model_list<-list( LinearModel=lm, Ridge=ridge, Lasso=lasso)
+res<-resamples(model_list)
+summary(res)
+bwplot(res)
+xyplot(res, metric='RMSE')
+
+#Best Model
+lasso$bestTune
+best<-lasso$finalModel
+coef(best, s=lasso$bestTune$lambda)
+
+#Prediction
+p1<-predict(lasso,train)
+sqrt(mean((train$y.train-p1)^2)) #train error
+
+p2<-predict(lasso, test)
+sqrt(mean((test$y.test-p2)^2)) #test error
+```
+
+## Model 4: seperate window/no window
+## correlation of two groups
+```{r}
+#correlation plot of window data-------------net_paid_price----windwo---------------------------
+corr_matrix <- corr_data[,c(-1,-2,-5,-13,-15,-16,-17,-18)]
+dim(corr_matrix)
+corr_haswin<-corr_matrix[which(corr_matrix$`View Quality`!="no window"),]
+
+corr_haswin$ave_net_paid_price<-log(corr_haswin$ave_net_paid_price)
+corr_haswin$`View Quality`<-ifelse(corr_haswin$`View Quality`=='low',1,
+                                          ifelse(corr_haswin$`View Quality`=='medium',2,
+                                                 ifelse(corr_haswin$`View Quality`=='high',3,NA)))
+corr_haswin$`Light Quality`<-ifelse(corr_haswin$`Light Quality`=='low',1,
+                                          ifelse(corr_haswin$`Light Quality`=='medium',2,
+                                                 ifelse(corr_haswin$`Light Quality`=='high',3,NA)))
+corr_haswin$`Internal Obstruction`<-ifelse(corr_haswin$`Internal Obstruction`=='no obstruction',1,
+                                    ifelse(corr_haswin$`Internal Obstruction`=='less-severe',2,
+                                           ifelse(corr_haswin$`Internal Obstruction`=='severe',3,NA)))
+corr_haswin$`Dry Wall Ratio`<- ifelse(corr_haswin$`Dry Wall Ratio`=='0',0,
+                                      ifelse(corr_haswin$`Dry Wall Ratio`=='1/3',1/3,
+                                             ifelse(corr_haswin$`Dry Wall Ratio`=='2/2',2/2,
+                                                    ifelse(corr_haswin$`Dry Wall Ratio`=='3/1',3/1,NA))))
+corr_haswin$`Premium Windows`<-ifelse(corr_haswin$`Premium Windows`=='no',1,
+                                                  ifelse(corr_haswin$`Premium Windows`=='yes',2,NA))
+corr_haswin$`Premium Floor`<-ifelse(corr_haswin$`Premium Floor`=='yes',1,0)
+corr_haswin$`Premium Corner`<-ifelse(corr_haswin$`Premium Corner`=='yes',1,0)
+
+haswin_matrix<-cor(corr_haswin)
+haswin_plot1<-corrplot(haswin_matrix, method="color",order="hclust",tl.col="black",tl.srt=45)
+
+
+#correlation plot of window data-------------net_paid_price----no windwo---------------------------
+corr_matrix <- corr_data[,c(-1,-2,-5,-13,-15,-16,-17,-18)]
+dim(corr_matrix)
+corr_nowin<-corr_matrix[which(corr_matrix$`View Quality`=="no window"),]
+corr_nowin<-corr_nowin[,-c(3,7,9)]
+corr_nowin$ave_net_paid_price<-log(corr_nowin$ave_net_paid_price)
+corr_nowin$`Light Quality`<-ifelse(corr_nowin$`Light Quality`=='low',1,
+                                          ifelse(corr_nowin$`Light Quality`=='medium',2,
+                                                 ifelse(corr_nowin$`Light Quality`=='high',3,NA)))
+corr_nowin$`Internal Obstruction`<-ifelse(corr_nowin$`Internal Obstruction`=='no obstruction',1,
+                                    ifelse(corr_nowin$`Internal Obstruction`=='less-severe',2,
+                                           ifelse(corr_nowin$`Internal Obstruction`=='severe',3,NA)))
+corr_nowin$`Dry Wall Ratio`<- ifelse(corr_nowin$`Dry Wall Ratio`=='0',0,
+                                      ifelse(corr_nowin$`Dry Wall Ratio`=='1/3',1/3,
+                                             ifelse(corr_nowin$`Dry Wall Ratio`=='2/2',2/2,
+                                                    ifelse(corr_nowin$`Dry Wall Ratio`=='3/1',3/1,NA))))
+corr_nowin$`Premium Floor`<-ifelse(corr_nowin$`Premium Floor`=='yes',1,0)
+
+nowin_matrix<-cor(corr_nowin)
+nowin_plot1<-corrplot(nowin_matrix, method="color",order="hclust",tl.col="black",tl.srt=45)
+
+
+#-----------------------------net_paid_price_per desk--------window---------------------------
+corr_matrix1 <- corr_data[,c(-1,-2,-5,-4,-13,-14,-15,-16)]
+
+corr_haswin1<-corr_matrix1[which(corr_matrix1$`View Quality`!="no window"),]
+#corr_haswin1$net_paid_price_per_desk<-log(corr_haswin1$net_paid_price_per_desk)
+corr_haswin1$`View Quality`<-ifelse(corr_haswin1$`View Quality`=='low',1,
+                                          ifelse(corr_haswin1$`View Quality`=='medium',2,
+                                                 ifelse(corr_haswin1$`View Quality`=='high',3,NA)))
+corr_haswin1$`Light Quality`<-ifelse(corr_haswin1$`Light Quality`=='low',1,
+                                          ifelse(corr_haswin1$`Light Quality`=='medium',2,
+                                                 ifelse(corr_haswin1$`Light Quality`=='high',3,NA)))
+corr_haswin1$`Internal Obstruction`<-ifelse(corr_haswin1$`Internal Obstruction`=='no obstruction',1,
+                                    ifelse(corr_haswin1$`Internal Obstruction`=='less-severe',2,
+                                           ifelse(corr_haswin1$`Internal Obstruction`=='severe',3,NA)))
+corr_haswin1$`Dry Wall Ratio`<- ifelse(corr_haswin1$`Dry Wall Ratio`=='0',0,
+                                      ifelse(corr_haswin1$`Dry Wall Ratio`=='1/3',1/3,
+                                             ifelse(corr_haswin1$`Dry Wall Ratio`=='2/2',2/2,
+                                                    ifelse(corr_haswin1$`Dry Wall Ratio`=='3/1',3/1,NA))))
+corr_haswin1$`Premium Windows`<-ifelse(corr_haswin1$`Premium Windows`=='no',1,
+                                                  ifelse(corr_haswin1$`Premium Windows`=='yes',2,NA))
+corr_haswin1$`Premium Floor`<-ifelse(corr_haswin1$`Premium Floor`=='yes',1,0)
+corr_haswin1$`Premium Corner`<-ifelse(corr_haswin1$`Premium Corner`=='yes',1,0)
+
+haswin_matrix1<-cor(corr_haswin1)
+corrplot(haswin_matrix1, method="color",order="hclust",tl.col="black",tl.srt=45)
+
+##-------------net_paid_price per desk----no windwo---------------------------
+corr_matrix1 <- corr_data[,c(-1,-2,-5,-4,-13,-14,-15,-16)]
+
+corr_nowin1<-corr_matrix1[which(corr_matrix1$`View Quality`=="no window"),]
+corr_nowin1<-corr_nowin1[,-c(2,6,8)]
+#corr_nowin1$net_paid_price_per_desk<-log(corr_nowin1$net_paid_price_per_desk)
+corr_nowin1$`Light Quality`<-ifelse(corr_nowin1$`Light Quality`=='low',1,
+                                          ifelse(corr_nowin1$`Light Quality`=='medium',2,
+                                                 ifelse(corr_nowin1$`Light Quality`=='high',3,NA)))
+corr_nowin1$`Internal Obstruction`<-ifelse(corr_nowin1$`Internal Obstruction`=='no obstruction',1,
+                                    ifelse(corr_nowin1$`Internal Obstruction`=='less-severe',2,
+                                           ifelse(corr_nowin1$`Internal Obstruction`=='severe',3,NA)))
+corr_nowin1$`Dry Wall Ratio`<- ifelse(corr_nowin1$`Dry Wall Ratio`=='0',0,
+                                      ifelse(corr_nowin1$`Dry Wall Ratio`=='1/3',1/3,
+                                             ifelse(corr_nowin1$`Dry Wall Ratio`=='2/2',2/2,
+                                                    ifelse(corr_nowin1$`Dry Wall Ratio`=='3/1',3/1,NA))))
+corr_nowin1$`Premium Floor`<-ifelse(corr_nowin1$`Premium Floor`=='yes',1,0)
+
+nowin_matrix1<-cor(corr_nowin1)
+corrplot(nowin_matrix1, method="color",order="hclust",tl.col="black",tl.srt=45)
+
+
+```
+
+##model by window
+```{r}
+# net_paid_price----------------------------------------------------------------------------------
+mod_matrix<-corr_data[,c(-1,-5,-13,-15,-16,-17,-18)]
+mod_matrix$ave_net_paid_price<-log(mod_matrix$ave_net_paid_price)
+mod_matrix$InternalRoomCount<-scale(mod_matrix$InternalRoomCount)
+mod_matrix$`Square Feet`<-scale(mod_matrix$`Square Feet`)
+mod_matrix$ave_net_paid_price<-scale(mod_matrix$ave_net_paid_price)
+
+haswin_data<-mod_matrix[which(mod_matrix$`View Quality`!="no window"),]
+nowin_data<-mod_matrix[which(mod_matrix$`View Quality`=="no window"),]
+nrow(haswin_data) + nrow(nowin_data)
+
+#lm---has window
+set.seed(1234)
+lm_haswin<-train(ave_net_paid_price~., haswin_data, method='lm', trControl=custom)
+lm_haswin$results
+summary(lm_haswin)
+plot(lm_haswin$finalModel)
+
+#lm--no window
+set.seed(123)
+nowin_data<-nowin_data[,-c(4,8,10)]
+lm_nowin<-train(ave_net_paid_price~., nowin_data, method='lm', trControl=custom)
+lm_nowin$results
+summary(lm_nowin)
+plot(lm_nowin$finalModel)
+
+# net_paid_price_per_desk---------------------------------------------------------------------
+mod_matrix1<-corr_data[,c(-1,-4,-5,-13,-14,-15,-16)]
+#mod_matrix1$net_paid_price_per_desk<-log(mod_matrix1$net_paid_price_per_desk)
+mod_matrix1$InternalRoomCount<-scale(mod_matrix1$InternalRoomCount)
+mod_matrix1$square_feet_per_desk<-scale(mod_matrix1$square_feet_per_desk)
+mod_matrix1$net_paid_price_per_desk<-scale(mod_matrix1$net_paid_price_per_desk)
+
+haswin_data1<-mod_matrix1[which(mod_matrix1$`View Quality`!="no window"),]
+nowin_data1<-mod_matrix1[which(mod_matrix1$`View Quality`=="no window"),]
+nrow(haswin_data1) + nrow(nowin_data1)
+
+#lm---has window
+set.seed(1234)
+lm_haswin1<-train(net_paid_price_per_desk~., haswin_data1, method='lm', trControl=custom)
+lm_haswin1$results
+summary(lm_haswin1)
+plot(lm_haswin1$finalModel)
+
+#lm--no window
+set.seed(123)
+nowin_data1<-nowin_data1[,-c(3,7,9)]
+lm_nowin1<-train(net_paid_price_per_desk~., nowin_data1, method='lm', trControl=custom)
+lm_nowin1$results
+summary(lm_nowin1)
+plot(lm_nowin$finalModel)
+
+
+```
+
+## 2. relation between floor and net paid price per desk
+```{r}
+dens_floor<-dens_data[,c("net_paid_price_per_desk","Property Name","Floor Name","sku")]
+dens_floor$`Property Name`<-factor(dens_floor$`Property Name`)
+dens_floor<-as.data.frame(dens_floor)
+
+#find the most common sku type
+sku_85broad<-data_85broad %>% group_by(sku) %>% summarise(total=count(sku))
+sku_135E<-data_135E %>% group_by(sku) %>% summarise(total=count(sku))
+sku_205E<-data_205E %>% group_by(sku) %>% summarise(total=count(sku))
+
+
+##85 Broad
+
+mu2<-ddply(dens_floor[which(dens_floor$`Property Name`=="85 Broad" & dens_floor$sku=="3-4 Desks" & dens_floor$net_paid_price_per_desk>250 & dens_floor$net_paid_price_per_desk<1500),],.(`Floor Name`), summarise, grp.mean=mean(net_paid_price_per_desk))
+mu2
+plot4<-dens_floor[which(dens_floor$`Property Name`=="85 Broad" & dens_floor$sku=="3-4 Desks" & dens_floor$net_paid_price_per_desk>250 & dens_floor$net_paid_price_per_desk<1500),] %>% 
+             ggplot(aes(x=net_paid_price_per_desk,y=`Floor Name`)) +
+               geom_point() + geom_point(data=mu2, aes(x=grp.mean,y=`Floor Name`,color="#1F3552")) +
+               xlim(0,1300) +
+               ggtitle("85 Broad St: net paid price per desk VS floor") +
+               theme(plot.title = element_text(hjust = 0.5), legend.position="none") +
+               labs(fill="mean value")
+
+
+## 135 E 57th
+mu3<-ddply(dens_floor[which(dens_floor$`Property Name`=="135 E 57th" & dens_floor$sku=="3-4 Desks" & dens_floor$net_paid_price_per_desk>400 & dens_floor$net_paid_price_per_desk<1500),],.(`Floor Name`), summarise, grp.mean=mean(net_paid_price_per_desk))
+floor_data<-dens_floor[which(dens_floor$`Property Name`=="135 E 57th"& dens_floor$sku=="3-4 Desks" & dens_floor$net_paid_price_per_desk>400 & dens_floor$net_paid_price_per_desk<1250),]
+floor_data$`Floor Name` <- factor(floor_data$`Floor Name`,levels=c("6th Floor","7th Floor","8th Floor","11th Floor","14th Floor","15th Floor","16th Floor"))
+
+plot5<-floor_data %>%
+               ggplot(aes(x=net_paid_price_per_desk,y=`Floor Name`)) +
+               geom_point() + geom_point(data=mu3, aes(x=grp.mean,y=`Floor Name`,color="#1F3552")) +
+               xlim(0,1300) +
+               ggtitle("135 E 57th: net paid price per desk VS floor") +
+               theme(plot.title = element_text(hjust = 0.5), legend.position="none") +
+               labs(fill="mean value")
+
+## 205 E 42nd
+mu4<-ddply(dens_floor[which(dens_floor$`Property Name`=="205 E 42nd" & dens_floor$sku=="3-4 Desks" & dens_floor$net_paid_price_per_desk>500 & dens_floor$net_paid_price_per_desk<1500),],.(`Floor Name`), summarise, grp.mean=mean(net_paid_price_per_desk))
+mu4
+plot6<-dens_floor[which(dens_floor$`Property Name`=="205 E 42nd"& dens_floor$sku=="3-4 Desks" & dens_floor$net_paid_price_per_desk>500 & dens_floor$net_paid_price_per_desk<1500),] %>% 
+             ggplot(aes(x=net_paid_price_per_desk,y=`Floor Name`)) +
+               geom_point() + geom_point(data=mu4, aes(x=grp.mean,y=`Floor Name`,color="#1F3552")) +
+               xlim(0,1300) +
+               ggtitle("205 E 42nd: net paid price per desk VS floor") +
+               theme(plot.title = element_text(hjust = 0.5), legend.position="none") +
+               labs(fill="mean value")
+grid.arrange(plot4,plot5,plot6,ncol=1)
+```
+
